@@ -18,15 +18,28 @@ declare module 'embla-carousel/components/EventHandler' {
   }
 }
 
-// TODO: Add stopOnFocusIn
+// TODO: Fix pointerdown and up
+// TODO: Add Ease in and out?
 
-export type AutoScrollType = CreatePluginType<{}, OptionsType>
+export type AutoScrollType = CreatePluginType<
+  {
+    play: (delay?: number) => void
+    stop: () => void
+    isPlaying: () => boolean
+  },
+  OptionsType
+>
 
 export type AutoScrollOptionsType = AutoScrollType['options']
 
 function AutoScroll(userOptions: AutoScrollOptionsType = {}): AutoScrollType {
   let options: OptionsType
   let emblaApi: EmblaCarouselType
+  let active = false
+  let playing = false
+  let wasPlaying = false
+  let timer = 0
+  let startDelay: number
   let defaultScrollBehaviour: ScrollBodyType
 
   function init(
@@ -41,37 +54,92 @@ function AutoScroll(userOptions: AutoScrollOptionsType = {}): AutoScrollType {
     const allOptions = mergeOptions(optionsBase, userOptions)
     options = optionsAtMedia(allOptions)
 
-    console.log('hi!')
+    startDelay = options.delay
+    active = true
+    defaultScrollBehaviour = emblaApi.internalEngine().scrollBody
 
+    const { eventStore, ownerDocument } = emblaApi.internalEngine()
     const emblaRoot = emblaApi.rootNode()
+    const root = (options.rootNode && options.rootNode(emblaRoot)) || emblaRoot
 
-    // const root = (options.rootNode && options.rootNode(emblaRoot)) || emblaRoot
+    emblaApi.on('pointerDown', stopScroll)
+    // if (!options.stopOnInteraction) emblaApi.on('settle', startScroll)
 
-    startScroll()
+    if (options.stopOnMouseEnter) {
+      eventStore.add(root, 'mouseenter', stopScroll)
 
-    emblaApi.on('pointerDown', clearScroll)
-    emblaApi.on('scroll', (_, name) => console.log(name))
-    emblaApi.on('settle', (_, name) => console.log(name))
+      if (!options.stopOnInteraction) {
+        eventStore.add(root, 'mouseleave', startScroll)
+      }
+    }
+
+    if (options.stopOnFocusIn) {
+      eventStore.add(root, 'focusin', stopScroll)
+
+      if (!options.stopOnInteraction) {
+        eventStore.add(root, 'focusout', startScroll)
+      }
+    }
+
+    eventStore.add(ownerDocument, 'visibilitychange', visibilityChange)
+
+    if (options.playOnInit) {
+      emblaApi.on('init', startScroll).on('reInit', startScroll)
+    }
   }
 
-  function destroy(): void {}
+  function destroy(): void {
+    active = false
+    playing = false
+    emblaApi.off('init', startScroll).off('reInit', startScroll)
+    emblaApi.off('pointerDown', stopScroll)
+    // if (!options.stopOnInteraction) emblaApi.off('pointerUp', startTimer)
+    stopScroll()
+  }
 
   function startScroll(): void {
+    if (!active || playing) return
+    emblaApi.emit('autoScroll:play')
+
     const engine = emblaApi.internalEngine()
-    defaultScrollBehaviour = engine.scrollBody
-    engine.scrollBody = autoScrollBehaviour(engine)
-    engine.animation.start()
+    const { ownerWindow } = engine
+
+    timer = ownerWindow.setTimeout(() => {
+      engine.scrollBody = createAutoScrollBehaviour(engine)
+      engine.animation.start()
+    }, startDelay)
+
+    playing = true
   }
 
-  function clearScroll(): void {
+  function stopScroll(): void {
+    if (!active || !playing) return
+    emblaApi.emit('autoScroll:stop')
+
     const engine = emblaApi.internalEngine()
-    engine.animation.stop()
+    const { ownerWindow } = engine
+
     engine.scrollBody = defaultScrollBehaviour
-    engine.animation.start()
+    ownerWindow.clearTimeout(timer)
+    timer = 0
+
+    playing = false
   }
 
-  function autoScrollBehaviour(engine: EngineType): ScrollBodyType {
+  function visibilityChange(): void {
+    const { ownerDocument } = emblaApi.internalEngine()
+
+    if (ownerDocument.visibilityState === 'hidden') {
+      wasPlaying = playing
+      return stopScroll()
+    }
+
+    if (wasPlaying) startScroll()
+  }
+
+  function createAutoScrollBehaviour(engine: EngineType): ScrollBodyType {
     const { location, target, scrollTarget, index, indexPrevious } = engine
+    const directionSign = options.direction === 'forward' ? -1 : 1
     const noop = (): ScrollBodyType => self
 
     let bodyVelocity = 0
@@ -82,7 +150,7 @@ function AutoScroll(userOptions: AutoScrollOptionsType = {}): AutoScrollType {
     function seek(): ScrollBodyType {
       let directionDiff = 0
 
-      bodyVelocity = -2
+      bodyVelocity = directionSign
       rawLocation += bodyVelocity
       location.add(bodyVelocity)
       target.set(location)
@@ -117,11 +185,31 @@ function AutoScroll(userOptions: AutoScrollOptionsType = {}): AutoScrollType {
     return self
   }
 
+  function play(delayOverride?: number): void {
+    if (typeof delayOverride !== 'undefined') startDelay = delayOverride
+    startScroll()
+  }
+
+  function stop(): void {
+    if (playing) stopScroll()
+  }
+
+  // function reset(): void {
+  //   if (playing) play()
+  // }
+
+  function isPlaying(): boolean {
+    return playing
+  }
+
   const self: AutoScrollType = {
     name: 'autoScroll',
     options: userOptions,
     init,
-    destroy
+    destroy,
+    play,
+    stop,
+    isPlaying
   }
   return self
 }
